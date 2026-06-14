@@ -2,76 +2,71 @@ package color
 
 import (
 	"context"
-	"net/url"
 	"strings"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/errs"
 )
 
-// domain.go exposes color as a kit Domain: a driver that a multi-domain
-// host (ant) enables with a single blank import,
+// domain.go exposes color pizza as a kit Domain driver.
 //
-//	import _ "github.com/tamnd/color-cli/color"
+// A multi-domain host (ant) enables it with a single blank import:
 //
-// exactly as a database/sql program enables a driver with `import _
-// "github.com/lib/pq"`. The init below registers it; the host then dereferences
-// color:// URIs by routing to the operations Register installs. The same
-// Domain also builds the standalone color binary (see cli.NewApp), so the
-// binary and a host share one source of truth.
-//
-// This is the scaffold's starting point: one resource type, "page", served by a
-// resolver op and a list op. Add your real types here as you model the site.
+//	import _ "github.com/tamnd/colorpizza-cli/color"
 func init() { kit.Register(Domain{}) }
 
-// Domain is the color driver. It carries no state; the per-run client is
-// built by the factory Register hands kit.
+// Domain is the colorpizza driver.
 type Domain struct{}
 
-// Info describes the scheme, the hostnames a pasted link is matched against, and
-// the identity reused for the binary's help and version.
+// Info describes the scheme, the hostnames a pasted link is matched against,
+// and the identity reused for the binary's help and version.
 func (Domain) Info() kit.DomainInfo {
 	return kit.DomainInfo{
 		Scheme: "color",
 		Hosts:  []string{Host},
 		Identity: kit.Identity{
 			Binary: "color",
-			Short:  "A command line for color.",
-			Long: `A command line for color.
-
-color reads public color data over plain HTTPS, shapes it into
-clean records, and prints output that pipes into the rest of your tools. No API
-key, nothing to run alongside it.`,
+			Short:  "Color name lookup and palette info from api.color.pizza",
+			Long: `color fetches color names and palette information from the public api.color.pizza API.
+No login or API key required.`,
 			Site: Host,
-			Repo: "https://github.com/tamnd/color-cli",
+			Repo: "https://github.com/tamnd/colorpizza-cli",
 		},
 	}
 }
 
-// Register installs the client factory and every operation onto app. A resolver
-// op (Single) names its own record type and answers `ant get`; a List op
-// enumerates a parent resource's members and answers `ant ls`.
+// Register installs the client factory and every operation onto app.
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	// Resolver op: one record per id, the home of `color page` and
-	// `ant get color://page/<id>`.
-	kit.Handle(app, kit.OpMeta{Name: "page", Group: "read", Single: true,
-		Summary: "Fetch a page by path or URL", URIType: "page", Resolver: true,
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, getPage)
+	// name: get color name(s) for hex value(s)
+	kit.Handle(app, kit.OpMeta{
+		Name:    "name",
+		Group:   "read",
+		List:    true,
+		Summary: "Get color names for hex values (e.g. ff0000,00ff00)",
+	}, nameOp)
 
-	// List op: members of a page, the home of `color links` and `ant ls`.
-	// It emits page stubs, so every listed member is itself an addressable
-	// color://page/ URI a host can follow.
-	kit.Handle(app, kit.OpMeta{Name: "links", Group: "read", List: true,
-		Summary: "List the pages a page links to", URIType: "page",
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, listLinks)
+	// list: list all named colors
+	kit.Handle(app, kit.OpMeta{
+		Name:    "list",
+		Group:   "read",
+		List:    true,
+		Summary: "List all named colors",
+	}, listOp)
+
+	// palette: get full palette info for hex values
+	kit.Handle(app, kit.OpMeta{
+		Name:    "palette",
+		Group:   "read",
+		List:    true,
+		Summary: "Get full palette info for hex values",
+	}, paletteOp)
 }
 
-// newClient builds the client from the host-resolved config, so a host and the
-// standalone binary pace and identify themselves the same way.
+// newClient builds the client from host-resolved config.
 func newClient(_ context.Context, cfg kit.Config) (any, error) {
-	c := NewClient()
+	c := DefaultConfig()
 	if cfg.UserAgent != "" {
 		c.UserAgent = cfg.UserAgent
 	}
@@ -82,92 +77,111 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 		c.Retries = cfg.Retries
 	}
 	if cfg.Timeout > 0 {
-		c.HTTP.Timeout = cfg.Timeout
+		c.Timeout = cfg.Timeout
 	}
-	return c, nil
+	return NewClient(c), nil
 }
 
 // --- inputs ---
-//
-// Each handler takes a typed input struct. kit fills the fields from the tags:
-// kit:"arg" is a positional argument, kit:"flag,inherit" binds the framework's
-// shared flag of the same name, and kit:"inject" receives the client newClient
-// builds.
 
-type pageRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
+type nameInput struct {
+	Hex    string  `kit:"flag" help:"comma-separated hex values without # (e.g. ff0000,00ff00)"`
 	Client *Client `kit:"inject"`
 }
 
-type listRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
-	Limit  int     `kit:"flag,inherit" help:"max results"`
+type listInput struct {
+	Count  int     `kit:"flag,inherit" help:"max number of colors to return"`
+	Client *Client `kit:"inject"`
+}
+
+type paletteInput struct {
+	Hex    string  `kit:"flag" help:"comma-separated hex values without # (e.g. ff0000,00ff00,0000ff)"`
 	Client *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
-func getPage(ctx context.Context, in pageRef, emit func(*Page) error) error {
-	p, err := in.Client.GetPage(ctx, pagePath(in.Ref))
-	if err != nil {
-		return mapErr(err)
+func nameOp(ctx context.Context, in nameInput, emit func(Color) error) error {
+	hexValues := parseHex(in.Hex)
+	if len(hexValues) == 0 {
+		return errs.Usage("--hex is required (e.g. --hex ff0000,00ff00)")
 	}
-	return emit(p)
-}
-
-func listLinks(ctx context.Context, in listRef, emit func(*Page) error) error {
-	pages, err := in.Client.PageLinks(ctx, pagePath(in.Ref), in.Limit)
+	colors, err := in.Client.Names(ctx, hexValues)
 	if err != nil {
-		return mapErr(err)
+		return err
 	}
-	for _, p := range pages {
-		if err := emit(p); err != nil {
+	for _, col := range colors {
+		if err := emit(col); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// --- Resolver: the URI-native string functions, pure and network-free ---
+func listOp(ctx context.Context, in listInput, emit func(Color) error) error {
+	colors, err := in.Client.List(ctx, in.Count)
+	if err != nil {
+		return err
+	}
+	for _, col := range colors {
+		if err := emit(col); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-// Classify turns any accepted input — a bare path or a full color.com URL —
-// into the canonical (type, id), so `ant resolve` and `ant url` touch no network.
+func paletteOp(ctx context.Context, in paletteInput, emit func(Color) error) error {
+	hexValues := parseHex(in.Hex)
+	if len(hexValues) == 0 {
+		return errs.Usage("--hex is required (e.g. --hex ff0000,00ff00,0000ff)")
+	}
+	colors, _, err := in.Client.Palette(ctx, hexValues)
+	if err != nil {
+		return err
+	}
+	for _, col := range colors {
+		if err := emit(col); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Classify turns an input into the canonical (type, id).
 func (Domain) Classify(input string) (uriType, id string, err error) {
-	id = pagePath(input)
-	if id == "" {
-		return "", "", errs.Usage("unrecognized color reference: %q", input)
+	if input == "" {
+		return "", "", errs.Usage("empty color reference")
 	}
-	return "page", id, nil
+	// strip leading # if present
+	id = strings.TrimPrefix(input, "#")
+	return "color", id, nil
 }
 
-// Locate is the inverse: the live https URL for a (type, id).
+// Locate returns the live URL for a (type, id).
 func (Domain) Locate(uriType, id string) (string, error) {
-	if uriType != "page" {
-		return "", errs.Usage("color has no resource type %q", uriType)
+	switch uriType {
+	case "color":
+		return "https://api.color.pizza/v1/?values=" + id, nil
+	default:
+		return "", errs.Usage("colorpizza has no resource type %q", uriType)
 	}
-	return BaseURL + "/" + strings.Trim(id, "/"), nil
 }
 
-// --- helpers ---
-
-// pagePath turns any accepted input into the canonical page id: the path of a
-// full URL on this host, or a bare path with its slashes trimmed.
-func pagePath(input string) string {
-	input = strings.TrimSpace(input)
-	if u, err := url.Parse(input); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return strings.Trim(u.Path, "/")
+// parseHex splits a comma-separated hex string into individual values,
+// stripping any # prefixes.
+func parseHex(s string) []string {
+	if s == "" {
+		return nil
 	}
-	return strings.Trim(input, "/")
-}
-
-// mapErr converts a library error into the kit error kind that carries the right
-// exit code, so a host renders the same outcomes the standalone binary does. As
-// you add sentinel errors to the library, map them here, for example:
-//
-//	case errors.Is(err, ErrNotFound):
-//		return errs.NotFound("%s", err.Error())
-//	case errors.Is(err, ErrRateLimited):
-//		return errs.RateLimited("%s", err.Error())
-func mapErr(err error) error {
-	return err
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.TrimPrefix(p, "#")
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

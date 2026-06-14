@@ -1,14 +1,6 @@
 package color
 
-import (
-	"testing"
-
-	"github.com/tamnd/any-cli/kit"
-)
-
-// These tests are offline: they exercise the URI driver's pure string functions
-// and the host wiring (mint, body, resolve), which need no network. The client's
-// HTTP behaviour is covered in color_test.go.
+import "testing"
 
 func TestDomainInfo(t *testing.T) {
 	info := Domain{}.Info()
@@ -19,58 +11,73 @@ func TestDomainInfo(t *testing.T) {
 		t.Errorf("Hosts = %v, want [%s]", info.Hosts, Host)
 	}
 	if info.Identity.Binary != "color" {
-		t.Errorf("Identity.Binary = %q, want color", info.Identity.Binary)
+		t.Errorf("Binary = %q, want color", info.Identity.Binary)
 	}
 }
 
 func TestClassify(t *testing.T) {
-	cases := []struct{ in, typ, id string }{
-		{"wiki/Go", "page", "wiki/Go"},
-		{"/about/", "page", "about"},
-		{"https://" + Host + "/team/contact", "page", "team/contact"},
+	_, _, err := Domain{}.Classify("")
+	if err == nil {
+		t.Error("Classify empty string should return error")
 	}
-	for _, tc := range cases {
-		typ, id, err := Domain{}.Classify(tc.in)
-		if err != nil || typ != tc.typ || id != tc.id {
-			t.Errorf("Classify(%q) = (%q, %q, %v), want (%q, %q, nil)",
-				tc.in, typ, id, err, tc.typ, tc.id)
-		}
+
+	typ, id, err := Domain{}.Classify("ff0000")
+	if err != nil {
+		t.Errorf("Classify: unexpected error: %v", err)
+	}
+	if typ != "color" {
+		t.Errorf("Classify type = %q, want color", typ)
+	}
+	if id != "ff0000" {
+		t.Errorf("Classify id = %q, want ff0000", id)
+	}
+
+	// strip # prefix
+	typ2, id2, err2 := Domain{}.Classify("#ff0000")
+	if err2 != nil {
+		t.Errorf("Classify #ff0000: unexpected error: %v", err2)
+	}
+	if typ2 != "color" || id2 != "ff0000" {
+		t.Errorf("Classify #ff0000 = (%q, %q), want (color, ff0000)", typ2, id2)
 	}
 }
 
 func TestLocate(t *testing.T) {
-	got, err := Domain{}.Locate("page", "wiki/Go")
-	want := "https://" + Host + "/wiki/Go"
-	if err != nil || got != want {
-		t.Errorf("Locate = (%q, %v), want (%q, nil)", got, err, want)
+	got, err := Domain{}.Locate("color", "ff0000")
+	if err != nil {
+		t.Fatalf("Locate: unexpected error: %v", err)
+	}
+	if got == "" {
+		t.Error("Locate returned empty URL")
+	}
+
+	_, err = Domain{}.Locate("unknown", "x")
+	if err == nil {
+		t.Error("Locate with unknown type should return error")
 	}
 }
 
-// TestHostWiring mounts the driver in a kit Host (the runtime ant drives) and
-// checks the round trip: a record mints to its URI, its body is readable, and a
-// bare id resolves back to the same URI. The init in domain.go registers the
-// domain, so kit.Open finds it.
-func TestHostWiring(t *testing.T) {
-	h, err := kit.Open()
-	if err != nil {
-		t.Fatal(err)
+func TestParseHex(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"ff0000", []string{"ff0000"}},
+		{"#ff0000", []string{"ff0000"}},
+		{"ff0000,00ff00", []string{"ff0000", "00ff00"}},
+		{"#ff0000, #00ff00", []string{"ff0000", "00ff00"}},
+		{"", nil},
 	}
-
-	p := &Page{ID: "wiki/Go", URL: "https://" + Host + "/wiki/Go", Title: "Go", Body: "Go is a language."}
-	u, err := h.Mint(p)
-	if err != nil {
-		t.Fatalf("Mint: %v", err)
-	}
-	if want := "color://page/wiki/Go"; u.String() != want {
-		t.Errorf("Mint = %q, want %q", u.String(), want)
-	}
-
-	if body, ok := h.Body(p); !ok || body == "" {
-		t.Errorf("Body = (%q, %v), want non-empty", body, ok)
-	}
-
-	got, err := h.ResolveOn("color", "about")
-	if err != nil || got.String() != "color://page/about" {
-		t.Errorf("ResolveOn = (%q, %v), want color://page/about", got.String(), err)
+	for _, tc := range cases {
+		got := parseHex(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("parseHex(%q) = %v, want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("parseHex(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+			}
+		}
 	}
 }

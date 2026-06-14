@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	"github.com/tamnd/any-cli/kit"
-	"github.com/tamnd/color-cli/cli"
+	"github.com/tamnd/colorpizza-cli/cli"
 )
 
 func main() {

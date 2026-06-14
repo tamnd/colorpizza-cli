@@ -4,7 +4,7 @@ package cli
 
 import (
 	"github.com/tamnd/any-cli/kit"
-	"github.com/tamnd/color-cli/color"
+	"github.com/tamnd/colorpizza-cli/color"
 )
 
 // Build metadata, set via -ldflags at release time.
