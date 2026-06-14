@@ -1,0 +1,10 @@
+title       = "color"
+baseURL     = "https://color-cli.tamnd.com/"
+description = "A command line for color."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/color-cli"
